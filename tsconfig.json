@@ -1,0 +1,63 @@
+/*
+  ================================================================
+  TypeScript Configuration (`tsconfig.json`)
+  ================================================================
+
+  Author: Dipen Chavan (hexdee606)
+  Version: 1.0.0
+  Last Modified: 2025-04-19
+  Description:
+    This configuration sets up the TypeScript compiler for an NPM-ready
+    Node.js library. It supports full typing, module resolution, and
+    clean output in a dist/ directory.
+
+  Notes:
+    - Compiles all TypeScript from `src/` into `dist/`
+    - Generates type declarations (e.g., `reporter.d.ts`)
+    - Uses strict type checking for reliability
+    - JavaScript interoperability is supported
+    - Ready to use with Playwright reporters or any Node CLI tool
+
+  ================================================================
+*/
+
+{
+  "compilerOptions": {
+    // Language features
+    "target": "ES2020",
+    "module": "ESNext",
+
+    // Output
+    "outDir": "./dist",
+    "declaration": true,
+    "declarationMap": true,         // Optional: helps with IDE navigation
+    "sourceMap": true,              // Optional: helpful for debugging
+
+    // Type safety
+    "strict": true,
+    "esModuleInterop": true,
+    "moduleResolution": "node",
+    "allowJs": true,                // Allows importing .js if needed
+
+    // Alias support (add paths here if you need aliases)
+    "baseUrl": "./",
+    "paths": {}
+  },
+
+  // Include the main TypeScript source files
+  "include": [
+    "src/**/*"
+  ],
+
+  // Exclude things we don’t want compiled
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test",           // CI-only, not for library consumers
+    "**/*.spec.ts"
+  ],
+
+  "typeAcquisition": {
+    "enable": false
+  }
+}

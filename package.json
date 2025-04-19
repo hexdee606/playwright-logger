@@ -1,0 +1,80 @@
+{
+  "name": "playwright-logger",
+  "version": "0.0.1",
+  "description": "Clean ASCII-based Playwright reporter with verbose + structured log output and timezone support.",
+  "author": "Dipen Chavan (hexdee606)",
+  "license": "Apache-2.0",
+  "type": "module",
+
+  "main": "dist/reporter.js",
+  "types": "dist/reporter.d.ts",
+  "exports": {
+    ".": "./dist/reporter.js"
+  },
+
+  "keywords": [
+    "playwright",
+    "reporter",
+    "ascii",
+    "logger",
+    "typescript",
+    "console",
+    "test",
+    "ci",
+    "cli"
+  ],
+
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "check": "tsc --noEmit",
+    "test": "npx playwright test test/tests --config=test/playwright.config.ts",
+    "version:patch": "npm version patch && git push --follow-tags && npm publish",
+    "version:minor": "npm version minor && git push --follow-tags && npm publish",
+    "version:major": "npm version major && git push --follow-tags && npm publish"
+  },
+
+  "dependencies": {
+    "@playwright/test": "^1.52.0",
+    "consola": "^3.4.2",
+    "moment": "^2.30.1",
+    "moment-timezone": "^0.5.48"
+  },
+
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "@types/node": "^22.14.1",
+    "chalk": "^5.4.1"
+  },
+
+  "peerDependencies": {
+    "node": ">=20.19.0"
+  },
+
+  "engines": {
+    "node": ">=20.19.0"
+  },
+
+  "files": [
+    "dist/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+
+  "homepage": "https://github.com/hexdee606/playwright-logger",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hexdee606/playwright-logger.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hexdee606/playwright-logger/issues"
+  },
+
+  "maintainers": [
+    {
+      "name": "Dipen Chavan",
+      "email": "dipen@example.com"
+    }
+  ]
+}
