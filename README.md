@@ -15,23 +15,23 @@ A clean and consistent Playwright Reporter for human-readable test logs.
 ## 📦 Install
 
 ```bash
-npm install --save-dev playwright-ascii-logger
+npm install --save-dev @hexdee606/playwright-logger
 ```
 
 ## 🔧 Use in `playwright.config.ts`
 
 ```ts
 reporter: [
-  ['playwright-ascii-logger', {
-    timezone: 'IST',
-    logLevel: 'verbose' // or 'standard'
-  }]
+    ['playwright-ascii-logger', {
+        timezone: 'IST',
+        logLevel: 'verbose' // or 'standard'
+    }]
 ]
 ```
 
 ## 🛠 Options
 
-| Key        | Type     | Description                                |
-|------------|----------|--------------------------------------------|
-| `timezone` | `string` | IANA timezone (e.g., `Asia/Kolkata`, `UTC`)|
-| `logLevel` | `string` | `'standard'` or `'verbose'`                |
+| Key        | Type     | Description                                 |
+|------------|----------|---------------------------------------------|
+| `timezone` | `string` | IANA timezone (e.g., `Asia/Kolkata`, `UTC`) |
+| `logLevel` | `string` | `'standard'` or `'verbose'`                 |
