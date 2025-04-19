@@ -1,5 +1,5 @@
 {
-  "name": "@dipen/playwright-logger",
+  "name": "@hexdee606/playwright-logger",
   "version": "0.0.1",
   "description": "Clean ASCII-based Playwright reporter with verbose + structured log output and timezone support.",
   "keywords": [
