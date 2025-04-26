@@ -23,17 +23,18 @@ import type {
 } from '@playwright/test/reporter';
 
 import moment from 'moment-timezone';
-import {consola} from 'consola';
+import {consola, createConsola} from "consola";
 import path from 'path';
 
 /**
  * Options for customizing the logger.
- * @property timezone - The timezone to use for timestamps.
- * @property logLevel - The amount of detail to show in logs ('standard' or 'verbose').
+ * @property timezone - The timezone to use for timestamps. Defaults to 'Asia/Kolkata'.
+ * @property verbosity - The level of detail to show in logs (0: minimal, 1: standard, 2: verbose). Defaults to 1.
  */
 interface LoggerOptions {
     timezone?: string;
-    logLevel?: 'standard' | 'verbose';
+    verbosity?: 0 | 1 | 2;
+    printsToStdIo?: boolean;
 }
 
 /**
@@ -66,26 +67,32 @@ const LOG_COLORS: Record<LogLevelKey, (msg: string) => string> = {
 /**
  * A Playwright reporter that prints human-readable, timestamped logs in the console.
  */
-export default class AsciiHumanReporter implements Reporter {
+export default class PlaywrightReporter implements Reporter {
     private timezone: string;
-    private logLevel: 'standard' | 'verbose';
+    private verbosity: 0 | 1 | 2;
     private startTime: number;
+    private printsToStdIo: boolean;
 
     /**
      * Creates a new reporter instance with optional settings.
      * @param opts LoggerOptions to configure timezone and verbosity.
      */
     constructor(opts: LoggerOptions = {}) {
-        this.timezone = this.normalizeTimezone(opts.timezone || 'Asia/Kolkata');
-        this.logLevel = opts.logLevel || 'standard';
+        this.timezone = this.normalizeTimezone(opts.timezone || process.env.PLAYWRIGHT_REPORTER_TIMEZONE || 'Asia/Kolkata');
+        this.verbosity = parseInt(opts.verbosity?.toString() || process.env.PLAYWRIGHT_REPORTER_VERBOSITY || '1', 10) as 0 | 1 | 2;
         this.startTime = Date.now(); // Save test run start time
+        this.printsToStdIo = true;
     }
 
     /**
      * Called when test run begins.
      */
     onBegin(config: FullConfig, suite: Suite): void {
-        this.log('INFO', 'Test Run Started', `Projects: ${config.projects.length}`, `Tests: ${this.countTests(suite)}`);
+        this.log('INFO', 'Test Run Started',
+            `Playwright: v${config.version}`,
+            `Projects: ${config.projects.length}`,
+            `Tests: ${this.countTests(suite)}`
+        );
     }
 
     /**
@@ -101,7 +108,7 @@ export default class AsciiHumanReporter implements Reporter {
      * Called when a test step begins.
      */
     onStepBegin(test: TestCase, result: TestResult, step: TestStep): void {
-        if (this.logLevel !== 'verbose') return;
+        if (this.verbosity < 2) return;
 
         const {cleanTitle} = this.parseStepTitle(step.title);
         const project = test.titlePath()[1] || 'unknown';
@@ -116,7 +123,7 @@ export default class AsciiHumanReporter implements Reporter {
      * Called when a test step ends.
      */
     onStepEnd(test: TestCase, result: TestResult, step: TestStep): void {
-        if (this.logLevel !== 'verbose') return;
+        if (this.verbosity < 2) return;
 
         const status: LogLevelKey = step.error ? 'ERROR' : 'SUCCESS';
         const errorMsg = step.error?.message || 'none';
@@ -145,17 +152,23 @@ export default class AsciiHumanReporter implements Reporter {
         });
 
         // Log any attachments
-        result.attachments.forEach(att => {
-            this.log('INFO', `📎 Attachment: ${att.name} (${att.contentType})`);
-            if (att.path) this.log('INFO', `     ${path.relative(process.cwd(), att.path)}`);
-        });
+        if (this.verbosity >= 1) {
+            result.attachments.forEach(att => {
+                this.log('INFO', `📎 Attachment: ${att.name} (${att.contentType})`);
+                if (att.path) this.log('INFO', `     ${path.relative(process.cwd(), att.path)}`);
+            });
+        }
     }
 
     /**
      * Called when there is a global error during the test run.
      */
     onError(error: TestError): void {
-        this.log('ERROR', `Global Error: ${error.message}`);
+        let contextInfo = '';
+        if (error.location) {
+            contextInfo = ` (File: ${this.formatLocation(error.location)})`;
+        }
+        this.log('ERROR', `Global Error: ${error.message}${contextInfo}`);
         if (error.stack) this.log('ERROR', `Stack Trace:\n${error.stack}`);
     }
 
@@ -172,7 +185,7 @@ export default class AsciiHumanReporter implements Reporter {
      * Tells Playwright that this reporter logs to the console.
      */
     printsToStdio(): boolean {
-        return true;
+        return this.printsToStdIo;
     }
 
     // ─────────────────────────────
@@ -183,10 +196,19 @@ export default class AsciiHumanReporter implements Reporter {
      * Print a formatted log message to the console.
      */
     private log(level: LogLevelKey, ...messages: string[]): void {
-        if (this.logLevel === 'standard' && level === 'STEP') return;
-        const timestamp = `[${moment().tz(this.timezone).format('DD MMM YYYY h:mm:ss a')}]`;
-        const tag = LOG_TAGS[level];
-        consola.log(LOG_COLORS[level](`${tag} ${timestamp} ${messages.join(' | ')}`));
+        if (this.verbosity < 2 && level === 'STEP') return;
+        if (level === "INFO") {
+            consola.info(LOG_COLORS[level](` ${messages.join(' | ')}`));
+        } else if (level === "STEP") {
+            consola.start(LOG_COLORS[level](` ${messages.join(' | ')}`));
+        } else if (level === "SUCCESS") {
+            consola.success(LOG_COLORS[level](` ${messages.join(' | ')}`));
+        } else if (level === "WARN") {
+            consola.warn(LOG_COLORS[level](` ${messages.join(' | ')}`));
+        } else if (level === "ERROR") {
+            consola.error(LOG_COLORS[level](` ${messages.join(' | ')}`));
+        }
+
     }
 
     /**
@@ -206,7 +228,7 @@ export default class AsciiHumanReporter implements Reporter {
      * Clean up step title by removing unnecessary selector info.
      */
     private parseStepTitle(title: string): { cleanTitle: string } {
-        return {cleanTitle: title.replace(/\[selector: .+?]/, '').trim()};
+        return {cleanTitle: title.replace(/\[selector: .+?]/gi, '').trim()};
     }
 
     /**
