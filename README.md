@@ -22,7 +22,7 @@ npm install --save-dev @hexdee606/playwright-logger
 
 ```ts
 reporter: [
-    ['playwright-ascii-logger', {
+    ['@hexdee606/playwright-logger', {
         timezone: 'IST',
         logLevel: 'verbose' // or 'standard'
     }]
