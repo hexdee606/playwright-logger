@@ -4,7 +4,7 @@
   ================================================================
 
   Author: Dipen Chavan (hexdee606)
-  Version: 0.0.1
+  Version: 0.0.3
   Last Modified: 2025-03-14
   Description: This configuration file sets up Playwright for end-to-end
                testing with behavior-driven development (BDD) integration.
@@ -54,8 +54,7 @@ export default defineConfig({
     reporter: [
         ['./src/reporter.ts', {
             timezone: 'IST',         // Or 'Asia/Kolkata'
-            logLevel: 'verbose',      // Or 'standard'
-            verbosity: 10
+            verbosity: 'verbose' // Or 'standard'
         }]
     ],
 

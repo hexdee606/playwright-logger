@@ -6,7 +6,7 @@
  * The output format is easy to understand and works well for both basic and verbose logging.
  *
  * @author
- * Dipen (Modified with detailed JSDoc by ChatGPT)
+ * Dipen
  */
 
 import type {
