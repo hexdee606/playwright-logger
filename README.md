@@ -18,20 +18,20 @@ A clean and consistent Playwright Reporter for human-readable test logs.
 npm install --save-dev @hexdee606/playwright-logger
 ```
 
-## 🔧 Use in `playwright.config.ts`
+## 🔧 Use in `playwright.config.ts | js`
 
 ```ts
 reporter: [
     ['@hexdee606/playwright-logger', {
         timezone: 'IST',
-        logLevel: 'verbose' // or 'standard'
+        verbosity: 'verbose' // or 'standard'
     }]
 ]
 ```
 
 ## 🛠 Options
 
-| Key        | Type     | Description                                 |
-|------------|----------|---------------------------------------------|
-| `timezone` | `string` | IANA timezone (e.g., `Asia/Kolkata`, `UTC`) |
-| `logLevel` | `string` | `'standard'` or `'verbose'`                 |
+| Key         | Type     | Description                                 |
+|-------------|----------|---------------------------------------------|
+| `timezone`  | `string` | IANA timezone (e.g., `Asia/Kolkata`, `UTC`) |
+| `verbosity` | `string` | `'standard'` or `'verbose'`                 |
