@@ -22,7 +22,7 @@
   ================================================================
 */
 
-import {defineConfig} from "@playwright/test"; // Import Playwright test configuration function
+import { defineConfig } from "@playwright/test"; // Import Playwright test configuration function
 
 /**
  * Playwright Test Configuration.
@@ -53,8 +53,9 @@ export default defineConfig({
     reportSlowTests: null,                   // Set a threshold to report slow tests (can be a number of milliseconds)
     reporter: [
         ['./src/reporter.ts', {
-            timezone: 'IST',         // Or 'Asia/Kolkata'
-            verbosity: 'verbose' // Or 'standard'
+            verbosity: 2,
+            timezone: 'IST',
+            printErrorsImmediate: false
         }]
     ],
 
@@ -82,7 +83,7 @@ export default defineConfig({
         acceptDownloads: true,                // Allow file downloads during tests
 
         // Configure viewport based on headless mode
-        viewport: {width: 1280, height: 720},
+        viewport: { width: 1280, height: 720 },
     },
 
     /**
