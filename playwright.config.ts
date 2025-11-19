@@ -4,7 +4,7 @@
   ================================================================
 
   Author: Dipen Chavan (hexdee606)
-  Version: 0.0.3
+  Version: 0.1.0
   Last Modified: 2025-03-14
   Description: This configuration file sets up Playwright for end-to-end
                testing with behavior-driven development (BDD) integration.
@@ -22,7 +22,7 @@
   ================================================================
 */
 
-import {defineConfig} from "@playwright/test"; // Import Playwright test configuration function
+import { defineConfig } from "@playwright/test"; // Import Playwright test configuration function
 
 /**
  * Playwright Test Configuration.
@@ -53,8 +53,9 @@ export default defineConfig({
     reportSlowTests: null,                   // Set a threshold to report slow tests (can be a number of milliseconds)
     reporter: [
         ['./src/reporter.ts', {
-            timezone: 'IST',         // Or 'Asia/Kolkata'
-            verbosity: 'verbose' // Or 'standard'
+            verbosity: 2,
+            timezone: 'IST',
+            printErrorsImmediate: false
         }]
     ],
 
@@ -82,7 +83,7 @@ export default defineConfig({
         acceptDownloads: true,                // Allow file downloads during tests
 
         // Configure viewport based on headless mode
-        viewport: {width: 1280, height: 720},
+        viewport: { width: 1280, height: 720 },
     },
 
     /**

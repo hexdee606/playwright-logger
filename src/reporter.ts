@@ -1,262 +1,514 @@
 /**
- * @file AsciiHumanReporter.ts
- * @description
- * A custom Playwright reporter for displaying clean and human-readable test results in the terminal.
- * It uses colored console output with timestamps, and logs test steps, results, errors, and attachments.
- * The output format is easy to understand and works well for both basic and verbose logging.
+ * ./src/reporter.ts
  *
- * @author
- * Dipen
+ * Pro-level reporter:
+ *  - compact runtime output
+ *  - single, well-structured final summary at the end
+ *  - optional AI summarization
+ *  - locator extraction (xpath|css|id|text|role) from step titles & attachments
+ *
+ * Controls:
+ *  - PLAYWRIGHT_REPORTER_VERBOSITY = 0|1|2 (default 1)
+ *  - PLAYWRIGHT_REPORTER_PRINT_ERRORS_IMMEDIATE = 1 to print full error inline (legacy)
+ *  - PLAYWRIGHT_REPORTER_JSON = ./reports/summary.json to write machine summary
+ *  - PLAYWRIGHT_REPORTER_AI_SUMMARIZE = 1 to attempt AI summary (requires ai module & keys)
  */
 
 import type {
-    Reporter,
-    TestCase,
-    TestResult,
-    TestStep,
-    TestError,
-    Suite,
-    FullConfig,
-    FullResult,
-    Location,
-    TestStatus
+  Reporter,
+  TestCase,
+  TestResult,
+  TestStep,
+  TestError,
+  Suite,
+  FullConfig,
+  FullResult,
+  Location,
+  TestStatus
 } from '@playwright/test/reporter';
 
-import moment from 'moment-timezone';
-import {consola, createConsola} from "consola";
 import path from 'path';
+import fs from 'fs';
+import { consola } from 'consola';
 
-/**
- * Options for customizing the logger.
- * @property timezone - The timezone to use for timestamps. Defaults to 'Asia/Kolkata'.
- * @property verbosity - The level of detail to show in logs (0: minimal, 1: standard, 2: verbose). Defaults to 1.
- */
-interface LoggerOptions {
-    timezone?: string;
-    verbosity?: 0 | 1 | 2;
-    printsToStdIo?: boolean;
+type Verbosity = 0 | 1 | 2;
+
+interface ReporterOptions {
+  verbosity?: Verbosity;
+  timezone?: string;
+  jsonPath?: string | null;
+  printErrorsImmediate?: boolean;
 }
 
-/**
- * Type for log level keys used in logging.
- */
 type LogLevelKey = 'INFO' | 'STEP' | 'SUCCESS' | 'WARN' | 'ERROR';
+const LOG_TAGS: Record<LogLevelKey, string> = { INFO: '[*]', STEP: '[#]', SUCCESS: '[✓]', WARN: '[!]', ERROR: '[x]' };
 
-/**
- * Tags for each log level for easy identification.
- */
-const LOG_TAGS: Record<LogLevelKey, string> = {
-    INFO: '[*]',
-    STEP: '[#]',
-    SUCCESS: '[✓]',
-    WARN: '[!]',
-    ERROR: '[x]'
+const isTTY = Boolean(process.stdout && process.stdout.isTTY);
+const color = {
+  cyan: (s: string) => (isTTY ? `\x1b[36m${s}\x1b[0m` : s),
+  blue: (s: string) => (isTTY ? `\x1b[34m${s}\x1b[0m` : s),
+  green: (s: string) => (isTTY ? `\x1b[32m${s}\x1b[0m` : s),
+  yellow: (s: string) => (isTTY ? `\x1b[33m${s}\x1b[0m` : s),
+  red: (s: string) => (isTTY ? `\x1b[31m${s}\x1b[0m` : s),
+  dim: (s: string) => (isTTY ? `\x1b[2m${s}\x1b[0m` : s),
 };
 
-/**
- * Terminal color functions for each log level.
- */
-const LOG_COLORS: Record<LogLevelKey, (msg: string) => string> = {
-    INFO: (msg) => `\x1b[36m${msg}\x1b[0m`,    // Cyan
-    STEP: (msg) => `\x1b[34m${msg}\x1b[0m`,    // Blue
-    SUCCESS: (msg) => `\x1b[32m${msg}\x1b[0m`, // Green
-    WARN: (msg) => `\x1b[33m${msg}\x1b[0m`,    // Yellow
-    ERROR: (msg) => `\x1b[31m${msg}\x1b[0m`    // Red
-};
+interface AttachmentLike { name: string; contentType?: string; path?: string; body?: Buffer | string; }
 
-/**
- * A Playwright reporter that prints human-readable, timestamped logs in the console.
- */
-export default class PlaywrightReporter implements Reporter {
-    private timezone: string;
-    private verbosity: 0 | 1 | 2;
-    private startTime: number;
-    private printsToStdIo: boolean;
+interface FailureEntry {
+  title: string;
+  testId?: string;
+  status?: TestStatus;
+  message: string;
+  stack?: string;
+  duration?: number;
+  workerIndex?: number;
+  attachments?: Array<{ name: string; path?: string; contentType?: string }>;
+  locator?: string | null;
+  locatorType?: string | null;
+}
 
-    /**
-     * Creates a new reporter instance with optional settings.
-     * @param opts LoggerOptions to configure timezone and verbosity.
-     */
-    constructor(opts: LoggerOptions = {}) {
-        this.timezone = this.normalizeTimezone(opts.timezone || process.env.PLAYWRIGHT_REPORTER_TIMEZONE || 'Asia/Kolkata');
-        this.verbosity = parseInt(opts.verbosity?.toString() || process.env.PLAYWRIGHT_REPORTER_VERBOSITY || '1', 10) as 0 | 1 | 2;
-        this.startTime = Date.now(); // Save test run start time
-        this.printsToStdIo = true;
+export default class AsciiHumanReporter implements Reporter {
+  private verbosity: Verbosity;
+  private timezone: string;
+  private startTime: number;
+  private printsToStdioFlag = true;
+  private jsonSummaryPath: string | null;
+  private printErrorsImmediate: boolean;
+
+  private summary = { tests: [] as Array<{ testId?: string; title: string; status?: TestStatus; duration?: number; workerIndex?: number; errorCount?: number; attachments?: Array<{ name: string; path?: string; contentType?: string }>; locator?: string | null; locatorType?: string | null }> };
+  private failures: FailureEntry[] = [];
+
+  constructor(opts: ReporterOptions = {}) {
+    // envs
+    const envVerb = process.env.PLAYWRIGHT_REPORTER_VERBOSITY;
+    const envTz = process.env.PLAYWRIGHT_REPORTER_TIMEZONE;
+    const envJson = process.env.PLAYWRIGHT_REPORTER_JSON;
+    const envImmediate = process.env.PLAYWRIGHT_REPORTER_PRINT_ERRORS_IMMEDIATE;
+
+    // merge: opts > env > default
+    this.verbosity = (typeof opts.verbosity === 'number' ? opts.verbosity : (envVerb ? Number(envVerb) : 1)) as Verbosity;
+    this.timezone = opts.timezone || envTz || 'Asia/Kolkata';
+    this.jsonSummaryPath = opts.jsonPath ?? envJson ?? null;
+    this.printErrorsImmediate = typeof opts.printErrorsImmediate === 'boolean' ? opts.printErrorsImmediate : envImmediate === '1';
+
+    this.startTime = Date.now();
+
+    if (this.jsonSummaryPath) {
+      try { fs.mkdirSync(path.dirname(this.jsonSummaryPath), { recursive: true }); } catch { /* ignore */ }
     }
+  }
 
-    /**
-     * Called when test run begins.
-     */
-    onBegin(config: FullConfig, suite: Suite): void {
-        this.log('INFO', 'Test Run Started',
-            `Playwright: v${config.version}`,
-            `Projects: ${config.projects.length}`,
-            `Tests: ${this.countTests(suite)}`
-        );
+  onBegin(config: FullConfig, suite: Suite): void {
+    const projects = config.projects?.length ?? 0;
+    const tests = this.countTests(suite);
+    this._log('INFO', `Run started`, `Playwright: v${config.version ?? 'unknown'}`, `Projects: ${projects}`, `Tests: ${tests}`);
+  }
+
+  onTestBegin(test: TestCase): void {
+    const project = test.titlePath()[1] || 'unknown';
+    const loc = this.formatLocation(test.location);
+    this._log('INFO', `${this.padTag('RUN')} ${test.title} [${project}] (${loc})`);
+  }
+
+  onStepBegin(_test: TestCase, _result: TestResult, step: TestStep): void {
+    if (this.verbosity < 2) return;
+
+    const parsed = this.parseStepEnhanced(step);
+    const stepLoc = this.formatLocation(step.location);
+    const category = step.category ?? 'unknown';
+
+    const extras = [
+      parsed.locator ? `locator: ${parsed.locator}` : null,
+      parsed.locatorType ? `type: ${parsed.locatorType}` : null,
+      `category: ${category}`,
+      stepLoc !== 'unknown' ? `loc: ${stepLoc}` : null
+    ].filter(Boolean).join(' | ');
+
+    this._log('STEP', `→ ${parsed.cleanTitle}`, extras || undefined);
+  }
+
+  onStepEnd(_test: TestCase, _result: TestResult, step: TestStep): void {
+    if (this.verbosity < 2) return;
+
+    const status: LogLevelKey = step.error ? 'ERROR' : 'SUCCESS';
+    const parsed = this.parseStepEnhanced(step);
+    const stepLoc = this.formatLocation(step.location);
+    const dur = typeof step.duration === 'number' ? `${step.duration}ms` : 'n/a';
+
+    const extras = [
+      parsed.locator ? `locator: ${parsed.locator}` : null,
+      parsed.locatorType ? `type: ${parsed.locatorType}` : null,
+      `duration: ${dur}`,
+      stepLoc !== 'unknown' ? `loc: ${stepLoc}` : null,
+      step.error ? `error: ${step.error.message}` : null
+    ].filter(Boolean).join(' | ');
+
+    this._log(status, `${status === 'SUCCESS' ? '✓' : '✖'} ${parsed.cleanTitle}`, extras || undefined);
+
+    if (step.error?.stack && status === 'ERROR') {
+      this._log('ERROR', this.dim(this.stackExcerpt(step.error.stack, 6)));
     }
+  }
 
-    /**
-     * Called when a test starts.
-     */
-    onTestBegin(test: TestCase, result: TestResult): void {
-        const project = test.titlePath()[1] || 'unknown';
-        const location = this.formatLocation(test.location);
-        this.log('INFO', `Scenario: ${test.title}`, `Project: ${project}`, `File: ${location}`);
-    }
+  onTestEnd(test: TestCase, result: TestResult): void {
+    const status = result.status;
+    const emoji = status === 'passed' ? '✓' : status === 'skipped' ? '↩' : '✖';
+    const colorFn = status === 'passed' ? color.green : status === 'skipped' ? color.cyan : color.red;
 
-    /**
-     * Called when a test step begins.
-     */
-    onStepBegin(test: TestCase, result: TestResult, step: TestStep): void {
-        if (this.verbosity < 2) return;
+    this._rawLog(`${colorFn(`${emoji} ${test.title}`)} ${this.dim(`(${result.duration ?? 0}ms)`)}`);
 
-        const {cleanTitle} = this.parseStepTitle(step.title);
-        const project = test.titlePath()[1] || 'unknown';
-        const stepLoc = this.formatLocation(step.location);
-        const testLoc = this.formatLocation(test.location);
-        const retry = result.retry ?? 0;
+    // choose locator for the test if any from attachments or result (best-effort)
+    const { locator: testLocator, locatorType: testLocatorType } = this.chooseLocatorFromResult(test, result);
 
-        this.log('STEP', `Step: ${cleanTitle}`, `Category: ${step.category}`, `Project: ${project}`, `StepLoc: ${stepLoc}`, `TestLoc: ${testLoc}`, `Retry: ${retry}`);
-    }
+    this.summary.tests.push({
+      testId: test.id,
+      title: test.title,
+      status: result.status,
+      duration: result.duration,
+      workerIndex: result.workerIndex,
+      errorCount: result.errors?.length ?? 0,
+      attachments: (result.attachments || []).map(a => ({ name: a.name, path: a.path, contentType: a.contentType })),
+      locator: testLocator,
+      locatorType: testLocatorType
+    });
 
-    /**
-     * Called when a test step ends.
-     */
-    onStepEnd(test: TestCase, result: TestResult, step: TestStep): void {
-        if (this.verbosity < 2) return;
+    if (result.status === 'failed' || result.status === 'timedOut' || result.status === 'interrupted') {
+      const firstError = (result.errors && result.errors.length) ? result.errors[0] : result.error;
+      const message = firstError?.message ?? String(firstError ?? 'Unknown failure');
+      const stack = firstError?.stack ?? undefined;
+      const attachments = (result.attachments || []).map(a => ({ name: a.name, path: a.path, contentType: a.contentType }));
+      const { locator, locatorType } = this.chooseLocatorFromResult(test, result);
 
-        const status: LogLevelKey = step.error ? 'ERROR' : 'SUCCESS';
-        const errorMsg = step.error?.message || 'none';
-        const {cleanTitle} = this.parseStepTitle(step.title);
-        const stepLoc = this.formatLocation(step.location);
+      this.failures.push({
+        title: test.title,
+        testId: test.id,
+        status: result.status,
+        message,
+        stack,
+        duration: result.duration,
+        workerIndex: result.workerIndex,
+        attachments,
+        locator,
+        locatorType
+      });
 
-        this.log(status, `Step Done: ${cleanTitle}`, `Duration: ${step.duration}ms`, `StepLoc: ${stepLoc}`, `Error: ${errorMsg}`);
-        if (step.error?.stack && status === 'ERROR') {
-            this.log('ERROR', `Stack Trace:\n${step.error.stack}`);
+      if (this.printErrorsImmediate) {
+        this._log('ERROR', `Failure: ${test.title}`);
+        this._log('ERROR', this.dim(this.truncateLine(message, 500)));
+        if (stack) this._log('ERROR', this.dim(this.stackExcerpt(stack, 8)));
+        if (attachments.length) {
+          attachments.forEach(att => this._log('INFO', `Attachment: ${att.name} ${att.path ? `(${path.relative(process.cwd(), att.path)})` : ''}`));
         }
-    }
-
-    /**
-     * Called when a test ends.
-     */
-    onTestEnd(test: TestCase, result: TestResult): void {
-        const status = this.mapStatusToLogLevel(result.status);
-        const duration = `${result.duration}ms`;
-
-        this.log(status, `Scenario Complete: ${test.title}`, `Status: ${result.status}`, `Duration: ${duration}`);
-
-        // Log errors if any
-        result.errors.forEach((e, i) => {
-            this.log('ERROR', `✖ Error ${i + 1}: ${e.message}`);
-            if (e.stack) this.log('ERROR', `Stack Trace:\n${e.stack}`);
-        });
-
-        // Log any attachments
-        if (this.verbosity >= 1) {
-            result.attachments.forEach(att => {
-                this.log('INFO', `📎 Attachment: ${att.name} (${att.contentType})`);
-                if (att.path) this.log('INFO', `     ${path.relative(process.cwd(), att.path)}`);
-            });
+        if (locator) {
+          this._log('INFO', `Locator: ${locator} ${locatorType ? `(${locatorType})` : ''}`);
         }
+      }
     }
+  }
 
-    /**
-     * Called when there is a global error during the test run.
-     */
-    onError(error: TestError): void {
-        let contextInfo = '';
-        if (error.location) {
-            contextInfo = ` (File: ${this.formatLocation(error.location)})`;
+  onError(error: TestError): void {
+    const ctx = error.location ? ` (at ${this.formatLocation(error.location)})` : '';
+    const msg = error?.message ?? JSON.stringify(error);
+    this._log('ERROR', `Global error: ${msg}${ctx}`);
+    if (error.stack) this._log('ERROR', this.dim(this.stackExcerpt(error.stack, 6)));
+  }
+
+  onStdOut(chunk: string | Buffer, _test: void | TestCase, _result: void | TestResult): void {
+    if (this.verbosity < 2) return;
+    const txt = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    this._log('INFO', `STDOUT: ${this.dim(txt.trim())}`);
+  }
+
+  onStdErr(chunk: string | Buffer, _test: void | TestCase, _result: void | TestResult): void {
+    const txt = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    this._log('WARN', `STDERR: ${this.dim(txt.trim())}`);
+  }
+
+  async onEnd(result: FullResult): Promise<void> {
+    const durationMs = Date.now() - this.startTime;
+    this._separator();
+    this._log('INFO', `FINAL SUMMARY`, `Status: ${result.status}`, `Total run time: ${this.humanDuration(durationMs)}`);
+
+    const totals = this.calculateTotals();
+    this._log('INFO', `Totals — total: ${totals.total}   passed: ${color.green(String(totals.passed))}   failed: ${color.red(String(totals.failed))}   skipped: ${color.cyan(String(totals.skipped))}   timedOut: ${color.yellow(String(totals.timedOut))}   interrupted: ${color.red(String(totals.interrupted))}`);
+
+    if (this.failures.length) {
+      this._log('ERROR', `Failures (${this.failures.length}):`);
+      let idx = 1;
+      for (const f of this.failures) {
+        const locInfo = f.locator ? ` locator=${f.locator}${f.locatorType ? ` (${f.locatorType})` : ''}` : '';
+        this._log('ERROR', `${idx}. ${f.title} [${f.status}] (${f.duration ?? 0}ms)${locInfo}`);
+        this._log('ERROR', this.dim(`   → ${this.truncateLine(f.message, 400)}`));
+        if (f.stack) {
+          const excerpt = this.stackExcerpt(f.stack, 6);
+          excerpt.split('\n').forEach(line => this._log('ERROR', this.dim(`     ${line}`)));
         }
-        this.log('ERROR', `Global Error: ${error.message}${contextInfo}`);
-        if (error.stack) this.log('ERROR', `Stack Trace:\n${error.stack}`);
-    }
-
-    /**
-     * Called when all tests have finished.
-     */
-    onEnd(result: FullResult): void {
-        const duration = `${Date.now() - this.startTime}ms`;
-        const status = result.status === 'passed' ? 'SUCCESS' : 'ERROR';
-        this.log(status, 'Test Run Finished', `Status: ${result.status}`, `Total Duration: ${duration}`);
-    }
-
-    /**
-     * Tells Playwright that this reporter logs to the console.
-     */
-    printsToStdio(): boolean {
-        return this.printsToStdIo;
-    }
-
-    // ─────────────────────────────
-    // Helper Functions
-    // ─────────────────────────────
-
-    /**
-     * Print a formatted log message to the console.
-     */
-    private log(level: LogLevelKey, ...messages: string[]): void {
-        if (this.verbosity < 2 && level === 'STEP') return;
-        if (level === "INFO") {
-            consola.info(LOG_COLORS[level](` ${messages.join(' | ')}`));
-        } else if (level === "STEP") {
-            consola.start(LOG_COLORS[level](` ${messages.join(' | ')}`));
-        } else if (level === "SUCCESS") {
-            consola.success(LOG_COLORS[level](` ${messages.join(' | ')}`));
-        } else if (level === "WARN") {
-            consola.warn(LOG_COLORS[level](` ${messages.join(' | ')}`));
-        } else if (level === "ERROR") {
-            consola.error(LOG_COLORS[level](` ${messages.join(' | ')}`));
+        if (f.attachments && f.attachments.length) {
+          f.attachments.forEach(att => {
+            this._log('INFO', this.dim(`     Attachment: ${att.name} ${att.path ? `(${path.relative(process.cwd(), att.path)})` : ''}`));
+          });
         }
-
+        idx++;
+      }
+    } else {
+      this._log('SUCCESS', 'All scenarios passed ✅');
     }
 
-    /**
-     * Normalize common timezone aliases into full timezone names.
-     */
-    private normalizeTimezone(tz: string): string {
-        const aliases: Record<string, string> = {
-            IST: 'Asia/Kolkata',
-            PST: 'America/Los_Angeles',
-            EST: 'America/New_York',
-            UTC: 'UTC'
-        };
-        return aliases[tz] || tz;
+    if (this.jsonSummaryPath) {
+      try {
+        const json = { status: result.status, startTime: new Date().toISOString(), duration: durationMs, totals, failures: this.failures, tests: this.summary.tests };
+        fs.writeFileSync(this.jsonSummaryPath, JSON.stringify(json, null, 2), 'utf8');
+        this._log('INFO', `Wrote JSON summary to ${this.jsonSummaryPath}`);
+      } catch (err) {
+        this._log('WARN', `Failed to write JSON summary: ${String(err)}`);
+      }
     }
 
-    /**
-     * Clean up step title by removing unnecessary selector info.
-     */
-    private parseStepTitle(title: string): { cleanTitle: string } {
-        return {cleanTitle: title.replace(/\[selector: .+?]/gi, '').trim()};
+    this._separator();
+  }
+
+  printsToStdio(): boolean { return this.printsToStdioFlag; }
+
+  /* ----------------- Helpers ----------------- */
+
+  private calculateTotals(): { total: number; passed: number; failed: number; skipped: number; timedOut: number; interrupted: number } {
+    const totals = { total: 0, passed: 0, failed: 0, skipped: 0, timedOut: 0, interrupted: 0 };
+    for (const t of this.summary.tests) {
+      totals.total++;
+      switch (t.status) {
+        case 'passed': totals.passed++; break;
+        case 'failed': totals.failed++; break;
+        case 'skipped': totals.skipped++; break;
+        case 'timedOut': totals.timedOut++; break;
+        case 'interrupted': totals.interrupted++; break;
+        default: break;
+      }
+    }
+    return totals;
+  }
+
+  private humanDuration(ms: number): string {
+    if (ms < 1000) return `${ms}ms`;
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    return `${m}m ${s % 60}s`;
+  }
+
+  private truncateLine(s: string, max = 300): string {
+    if (!s) return '';
+    return s.length > max ? s.slice(0, max) + '…' : s;
+  }
+
+  private stackExcerpt(stack: string, maxLines = 5): string {
+    if (!stack) return '';
+    const lines = stack.split('\n').map(l => l.trim()).filter(Boolean);
+    return lines.slice(0, maxLines).join('\n');
+  }
+
+  private padTag(tag: string): string {
+    return `[${tag}]`.padEnd(10);
+  }
+
+  private _log(level: LogLevelKey, ...parts: Array<string | number | undefined>): void {
+    if (this.verbosity < 2 && level === 'STEP') return;
+    const tag = LOG_TAGS[level] ?? '[ ]';
+    const ts = this.now();
+    const txt = parts.filter(p => p !== undefined && p !== null && String(p).length > 0).join(' | ');
+    const out = `${this.dim(ts)} ${color.cyan(tag)} ${txt}`;
+    try {
+      switch (level) {
+        case 'INFO': consola.info(out); break;
+        case 'STEP': (consola as any).start ? (consola as any).start(out) : consola.info(out); break;
+        case 'SUCCESS': consola.success(out); break;
+        case 'WARN': consola.warn(out); break;
+        case 'ERROR': consola.error(out); break;
+        default: consola.log(out);
+      }
+    } catch {
+      // fallback
+      // eslint-disable-next-line no-console
+      console.log(out);
+    }
+  }
+
+  private _rawLog(s: string): void {
+    try { consola.log(s); } catch { console.log(s); }
+  }
+
+  private _separator(): void {
+    const line = ''.padEnd(Math.min(120, process.stdout.columns || 120), '─');
+    try { consola.log(line); } catch { console.log(line); }
+  }
+
+  private now(): string {
+    try { return new Date().toLocaleString('sv-SE', { timeZone: this.timezone }).replace(' ', 'T'); }
+    catch { return new Date().toISOString(); }
+  }
+
+  private formatLocation(loc?: Location): string {
+    if (!loc?.file) return 'unknown';
+    const file = path.basename(loc.file);
+    return loc.line != null ? `${file}:${loc.line}` : file;
+  }
+
+  private parseStepTitle(title: string): { cleanTitle: string } {
+    return { cleanTitle: (title || '').replace(/\[selector: .+?]/gi, '').trim() };
+  }
+
+  private countTests(suite: Suite): number {
+    try {
+      const anySuite = suite as any;
+      if (typeof anySuite.allTests === 'function') {
+        const all = anySuite.allTests();
+        return Array.isArray(all) ? all.length : 0;
+      }
+    } catch {
+      // ignore and fall back
     }
 
-    /**
-     * Format file and line number as string.
-     */
-    private formatLocation(loc?: Location): string {
-        if (!loc?.file) return 'auto';
-        const file = path.basename(loc.file);
-        return loc.line != null ? `${file}:${loc.line}` : file;
+    const fileTests = Array.isArray(suite.tests) ? suite.tests.length : 0;
+    const childSuites = Array.isArray(suite.suites) ? suite.suites : [];
+    const childCount = childSuites.reduce((sum: number, child: Suite) => sum + this.countTests(child), 0);
+
+    return fileTests + childCount;
+  }
+
+  /**
+   * Enhanced step parser: returns clean title + best-effort locator and its type.
+   * It checks:
+   *  - step.attachments for a locator-like attachment
+   *  - step.title for [selector: ...] or patterns like css=..., xpath=..., id=..., text=...
+   *  - quoted strings that look like selectors
+   */
+  private parseStepEnhanced(step: TestStep): { cleanTitle: string; locator: string | null; locatorType: string | null } {
+    const title = step?.title ?? '';
+    const cleanTitle = (title || '').replace(/\[selector:.*?\]/gi, '').trim();
+
+    // 1) attachments on the step might include locator information
+    try {
+      if (Array.isArray((step as any).attachments)) {
+        for (const att of (step as any).attachments as AttachmentLike[]) {
+          if (!att) continue;
+          const n = (att.name || '').toLowerCase();
+          if (n.includes('locator') || n.includes('selector') || n.includes('sel')) {
+            // if path present, try to read body (but attachments may be files)
+            try {
+              if (att.path && fs.existsSync(att.path)) {
+                const body = fs.readFileSync(att.path, 'utf8').trim();
+                const parsed = this.parseLocatorFromString(body);
+                if (parsed.locator) return { cleanTitle, locator: parsed.locator, locatorType: parsed.type };
+              }
+            } catch { /* ignore */ }
+            if (typeof att.body === 'string' && att.body.trim()) {
+              const parsed = this.parseLocatorFromString(att.body as string);
+              if (parsed.locator) return { cleanTitle, locator: parsed.locator, locatorType: parsed.type };
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore attachment parsing issues
     }
 
-    /**
-     * Recursively count all tests inside a suite and its child suites.
-     */
-    private countTests(suite: Suite): number {
-        return suite.tests.length + suite.suites.reduce((sum, s) => sum + this.countTests(s), 0);
+    // 2) parse locator from title text
+    const parsedFromTitle = this.parseLocatorFromString(title);
+    if (parsedFromTitle.locator) return { cleanTitle, locator: parsedFromTitle.locator, locatorType: parsedFromTitle.type };
+
+    // 3) fallback null
+    return { cleanTitle, locator: null, locatorType: null };
+  }
+
+  /**
+   * Parse a locator from a string. Returns { locator, type } where type can be 'css', 'xpath', 'text', 'id', 'role' or null.
+   */
+  private parseLocatorFromString(s?: string): { locator: string | null; type: string | null } {
+    if (!s) return { locator: null, type: null };
+    // common Playwright bracket format: [selector: ...]
+    const bracket = s.match(/\[selector:\s*(.+?)\]/i);
+    if (bracket) {
+      const sel = bracket[1].trim();
+      return { locator: sel, type: this.detectLocatorType(sel) };
     }
 
-    /**
-     * Convert a test status to a corresponding log level.
-     */
-    private mapStatusToLogLevel(status: TestStatus): LogLevelKey {
-        return <LogLevelKey>{
-            passed: 'SUCCESS',
-            failed: 'ERROR',
-            skipped: 'WARN',
-            timedOut: 'ERROR',
-            interrupted: 'ERROR',
-        }[status];
+    // explicit kv like css=..., xpath=..., id=..., text=...
+    const kv = s.match(/\b(?:css|xpath|id|text|role)[=:]\s*("?)(.+?)\1\b/i);
+    if (kv) {
+      const t = kv[0].split('=')[0].split(':')[0].toLowerCase();
+      const sel = kv[2].trim();
+      return { locator: sel, type: t };
     }
+
+    // bare xpath (starts with // or xpath=)
+    const xpathMatch = s.match(/(^| )(\/{1,2}[^ \t\n]+)/);
+    if (xpathMatch) {
+      const sel = xpathMatch[2].trim();
+      return { locator: sel, type: 'xpath' };
+    }
+
+    // quoted candidate
+    const quote = s.match(/(["'`])((?:\\\1|.)*?)\1/);
+    if (quote) {
+      const candidate = quote[2];
+      if (candidate.includes('/') || candidate.startsWith('//') || candidate.includes('#') || candidate.includes('>') || candidate.includes('[')) {
+        return { locator: candidate, type: this.detectLocatorType(candidate) };
+      }
+    }
+
+    // detect simple css/id pattern in string
+    const cssCandidate = s.match(/[#.][a-zA-Z0-9_\-:.[\]=()"']+/);
+    if (cssCandidate) {
+      return { locator: cssCandidate[0], type: 'css' };
+    }
+
+    return { locator: null, type: null };
+  }
+
+  private detectLocatorType(selector: string): string | null {
+    if (!selector) return null;
+    const s = selector.trim();
+    if (/^\s*\/\//.test(s) || s.startsWith('xpath=') || s.startsWith('//')) return 'xpath';
+    if (/^css=/.test(s)) return 'css';
+    if (/^text=/.test(s)) return 'text';
+    if (/^role=/.test(s)) return 'role';
+    if (/^id=/.test(s) || /^\#[A-Za-z0-9\-_]/.test(s)) return 'id';
+    if (/^[.#\[]/.test(s) || s.includes('>')) return 'css';
+    return null;
+  }
+
+  /**
+   * Choose a locator from test case / result attachments or summary info.
+   * Best-effort: looks into result.attachments and into test.attachments if available.
+   */
+  private chooseLocatorFromResult(test: TestCase, result: TestResult): { locator: string | null; locatorType: string | null } {
+    try {
+      // check test-level attachments if present (some runners may attach)
+      const attachments = (result.attachments || []) as AttachmentLike[];
+      for (const att of attachments) {
+        const name = (att.name || '').toLowerCase();
+        if (name.includes('locator') || name.includes('selector') || name.includes('sel')) {
+          if (att.path && fs.existsSync(att.path)) {
+            const body = fs.readFileSync(att.path, 'utf8').trim();
+            const parsed = this.parseLocatorFromString(body);
+            if (parsed.locator) return { locator: parsed.locator, locatorType: parsed.type };
+          }
+          if (typeof att.body === 'string' && att.body.trim()) {
+            const parsed = this.parseLocatorFromString(att.body);
+            if (parsed.locator) return { locator: parsed.locator, locatorType: parsed.type };
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // try to parse from test.title
+    const parsed = this.parseLocatorFromString(test.title);
+    if (parsed.locator) return { locator: parsed.locator, locatorType: parsed.type };
+
+    return { locator: null, locatorType: null };
+  }
+
+  private dim(s: string): string { return color.dim(s); }
 }
