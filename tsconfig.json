@@ -4,8 +4,8 @@
   ================================================================
 
   Author: Dipen Chavan (hexdee606)
-  Version: 0.0.3
-  Last Modified: 2025-04-19
+  Version: 0.1.0
+  Last Modified: 2025-11-20
   Description:
     This configuration sets up the TypeScript compiler for an NPM-ready
     Node.js library. It supports full typing, module resolution, and

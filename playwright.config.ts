@@ -4,7 +4,7 @@
   ================================================================
 
   Author: Dipen Chavan (hexdee606)
-  Version: 0.0.3
+  Version: 0.1.0
   Last Modified: 2025-03-14
   Description: This configuration file sets up Playwright for end-to-end
                testing with behavior-driven development (BDD) integration.
